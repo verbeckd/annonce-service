@@ -109,8 +109,8 @@ annonce-service/
 ### 2.2 Récupérer le projet
 
 ```bash
-cd /chemin/vers/votre/workspace
-# (placer le dossier annonce-service ici, ou cloner le dépôt)
+git clone git@github.com:verbeckd/annonce-service.git
+
 cd annonce-service
 ```
 
@@ -141,7 +141,7 @@ java -jar target/annonce-service-1.0.0.jar
 ### 3.3 Vérifier que le service répond
 
 ```bash
-curl http://localhost:8081/annonces
+curl http://localhost:8081/swagger-ui/index.html#/
 ```
 
 ---
