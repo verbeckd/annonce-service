@@ -32,6 +32,10 @@ springdoc:
     operationsSorter: method
     tagsSorter: alpha
 
+moderation:
+  service:
+    base-url: http://localhost:3001
+
 logging:
   level:
     sn.senannonces: INFO

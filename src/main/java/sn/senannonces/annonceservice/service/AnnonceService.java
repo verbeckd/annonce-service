@@ -2,6 +2,7 @@ package sn.senannonces.annonceservice.service;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import sn.senannonces.annonceservice.client.ModerationClient;
 import sn.senannonces.annonceservice.dto.AnnonceRequest;
 import sn.senannonces.annonceservice.exception.AnnonceNotFoundException;
 import sn.senannonces.annonceservice.exception.InvalidStatusTransitionException;
@@ -14,28 +15,22 @@ import java.util.List;
 /**
  * Business logic for {@link Annonce} management.
  *
- * <p>This service is the single authority on lifecycle transitions: any
- * unsupported transition raises an {@link InvalidStatusTransitionException}.
+ * <p>This service is the single authority on lifecycle transitions.
+ * Status is always stored here; moderation-service only sends decisions back via callback.
  */
 @Service
 public class AnnonceService {
 
     private final AnnonceRepository annonceRepository;
+    private final ModerationClient moderationClient;
 
-    /**
-     * Creates the service with its persistence dependency.
-     *
-     * @param annonceRepository repository used for persistence
-     */
-    public AnnonceService(AnnonceRepository annonceRepository) {
+    public AnnonceService(AnnonceRepository annonceRepository, ModerationClient moderationClient) {
         this.annonceRepository = annonceRepository;
+        this.moderationClient = moderationClient;
     }
 
     /**
      * Persists a new ad with the {@link AnnonceStatus#EN_ATTENTE} initial status.
-     *
-     * @param request validated payload
-     * @return the persisted ad with its generated id
      */
     @Transactional
     public Annonce create(AnnonceRequest request) {
@@ -49,11 +44,7 @@ public class AnnonceService {
         return annonceRepository.save(annonce);
     }
 
-    /**
-     * Returns every ad currently stored.
-     *
-     * @return all ads, in repository order (no pagination in this MVP)
-     */
+    /** Returns every ad currently stored. */
     @Transactional(readOnly = true)
     public List<Annonce> findAll() {
         return annonceRepository.findAll();
@@ -62,8 +53,6 @@ public class AnnonceService {
     /**
      * Loads an ad by id.
      *
-     * @param id ad identifier
-     * @return the matching ad
      * @throws AnnonceNotFoundException when no ad matches the id
      */
     @Transactional(readOnly = true)
@@ -73,41 +62,69 @@ public class AnnonceService {
     }
 
     /**
-     * Applies a moderator decision on a pending ad.
+     * Submits a pending ad to moderation-service for review.
      *
-     * <p>The current status must be {@link AnnonceStatus#EN_ATTENTE} and the
-     * decision must be either {@link AnnonceStatus#APPROUVEE} or
-     * {@link AnnonceStatus#REJETEE}.
+     * <p>The ad must be in {@link AnnonceStatus#EN_ATTENTE}.
+     * This method does NOT change the status — moderation-service will call back
+     * via {@link #applyModerationResult} once a decision is made.
+     *
+     * @param id ad identifier
+     * @return the annonce (still EN_ATTENTE at this point)
+     * @throws AnnonceNotFoundException         when no ad matches the id
+     * @throws InvalidStatusTransitionException when the ad is not EN_ATTENTE
+     * @throws RuntimeException                 when moderation-service is unreachable
+     */
+    @Transactional(readOnly = true)
+    public Annonce submitForModeration(Long id) {
+        Annonce annonce = findById(id);
+        if (annonce.getStatut() != AnnonceStatus.EN_ATTENTE) {
+            throw new InvalidStatusTransitionException(
+                    "Only EN_ATTENTE annonces can be submitted for moderation. Current status: "
+                    + annonce.getStatut());
+        }
+        moderationClient.submitForModeration(annonce);
+        return annonce;
+    }
+
+    /**
+     * Applies a moderation decision received from moderation-service via callback.
+     *
+     * <ul>
+     *   <li>{@link AnnonceStatus#APPROUVEE} → status becomes {@link AnnonceStatus#PUBLIEE}</li>
+     *   <li>{@link AnnonceStatus#REJETEE}   → status becomes {@link AnnonceStatus#REJETEE}</li>
+     * </ul>
      *
      * @param id       ad identifier
-     * @param decision moderator outcome
+     * @param decision APPROUVEE or REJETEE (sent by moderation-service)
      * @return the updated ad
      * @throws AnnonceNotFoundException         when no ad matches the id
-     * @throws InvalidStatusTransitionException when the ad is not pending or
-     *                                          the decision is not allowed
+     * @throws InvalidStatusTransitionException when the decision is invalid or the ad is not EN_ATTENTE
      */
     @Transactional
-    public Annonce submitDecision(Long id, AnnonceStatus decision) {
+    public Annonce applyModerationResult(Long id, AnnonceStatus decision) {
         if (decision != AnnonceStatus.APPROUVEE && decision != AnnonceStatus.REJETEE) {
             throw new InvalidStatusTransitionException(
-                    "Decision must be APPROUVEE or REJETEE, got: " + decision);
+                    "Moderation result must be APPROUVEE or REJETEE, got: " + decision);
         }
         Annonce annonce = findById(id);
         if (annonce.getStatut() != AnnonceStatus.EN_ATTENTE) {
             throw new InvalidStatusTransitionException(annonce.getStatut(), decision);
         }
-        annonce.setStatut(decision);
+        AnnonceStatus finalStatus = (decision == AnnonceStatus.APPROUVEE)
+                ? AnnonceStatus.PUBLIEE
+                : AnnonceStatus.REJETEE;
+        annonce.setStatut(finalStatus);
         return annonceRepository.save(annonce);
     }
 
     /**
-     * Publishes an approved ad, switching its status to
-     * {@link AnnonceStatus#PUBLIEE}.
+     * Publishes an approved ad (APPROUVEE → PUBLIEE).
      *
-     * @param id ad identifier
-     * @return the updated ad
+     * <p>This is a manual step kept for assignment compatibility.
+     * In the main moderation flow, approval goes directly to PUBLIEE via callback.
+     *
      * @throws AnnonceNotFoundException         when no ad matches the id
-     * @throws InvalidStatusTransitionException when the ad is not approved
+     * @throws InvalidStatusTransitionException when the ad is not APPROUVEE
      */
     @Transactional
     public Annonce publish(Long id) {
